@@ -31,26 +31,58 @@
     .danger { color: rgba(255,120,120,.98); }
   
     .resetBtn{
-      position:fixed; right:12px; top:12px;
-      z-index:10;
-      padding:10px 12px;
-      border-radius:12px;
-      border:1px solid rgba(255,255,255,.22);
-      background:rgba(0,0,0,.35);
-      color:rgba(255,255,255,.92);
-      font:600 12px/1 ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,"Noto Sans KR",sans-serif;
+      position:fixed; right:16px; top:12px; z-index:60;
+      padding:0;
+      border:none;
+      background:transparent;
+      color:#fff;
+      font:700 16px/1 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
       letter-spacing:.06em;
-      backdrop-filter: blur(6px);
-      -webkit-backdrop-filter: blur(6px);
-      user-select:none;
+      user-select:none; -webkit-user-select:none; -webkit-touch-callout:none;
       touch-action: manipulation;
     }
-    .resetBtn:active{ transform: translateY(1px); }
+    .resetBtn:active{ opacity:0.7; }
+    @media (max-width:700px){
+      .resetBtn{ font-size:20px; }
+    }
+
+
+  /* --- Minimal UI (text only) --- */
+  #infoTop{
+    position:fixed; top:12px; left:16px; z-index:50;
+    color:#fff; font:16px/1.2 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+    user-select:none; -webkit-user-select:none; -webkit-touch-callout:none;
+    pointer-events:none;
+    text-shadow:none;
+  }
+  #infoBottom{
+    position:fixed; bottom:16px; left:50%; transform:translateX(-50%); z-index:50;
+    color:#fff; font:14px/1.2 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+    user-select:none; -webkit-user-select:none; -webkit-touch-callout:none;
+    pointer-events:none;
+    text-shadow:none;
+    white-space:nowrap;
+  }
+  /* Hide any other HUD/help panels if they exist */
+  #hud, #help, #panel, #ui, #stats, #reset, #tips, #instructions, #legend{
+    display:none !important;
+  }
+  @media (max-width: 700px){
+    #infoTop{ font-size:20px; }
+    #infoBottom{ font-size:18px; }
+  }
+
+
+    /* Ensure legacy HUD is hidden */
+  .hud { display:none !important; }
 
 </style>
 </head>
 <body>
 <canvas id="c"></canvas>
+
+  <div id="infoTop"></div>
+  <div id="infoBottom"></div>
 <button id="resetBtn" class="resetBtn" type="button">RESET</button>
 
 <div class="hud">
@@ -70,6 +102,28 @@
 (() => {
   const canvas = document.getElementById('c');
 
+
+  // --- Minimal UI refs (text only) ---
+  const infoTopEl = document.getElementById('infoTop');
+  const infoBottomEl = document.getElementById('infoBottom');
+  const resetBtnEl = document.getElementById('resetBtn');
+  if (resetBtnEl) resetBtnEl.addEventListener('click', () => reset());
+
+  function pad3(n){
+    const v = Math.floor(Math.max(0, Number(n) || 0));
+    return String(v).padStart(3,'0');
+  }
+
+  function updateMinimalUI(){
+    // mass / radius / speed (no decimals)
+    const spd = Math.hypot(player.vx, player.vy);
+    if (infoTopEl){
+      infoTopEl.textContent = `질량 : ${pad3(player.mass)} / 반지름 : ${pad3(playerR())} / 속도 : ${pad3(spd)}`;
+    }
+    if (infoBottomEl){
+      infoBottomEl.textContent = 'Move : Click/Touch 또는 Hold+Drag, Zoom : Wheel/Pinch';
+    }
+  }
   // --- Mobile: prevent long-press selection/callout inside game area
   canvas.addEventListener('contextmenu', (e) => e.preventDefault());
   document.addEventListener('selectstart', (e) => { if (e.target === canvas) e.preventDefault(); });
@@ -283,8 +337,7 @@
     return clamp(s, 0.75, 3.2);
   }
   function maxSpeedNow() {
-    const b = boostActive() ? CONFIG.boostMultiplier : 1.0;
-    return Math.min(CONFIG.maxSpeedCap * b, CONFIG.baseMaxSpeed * sizeSpeedScale() * b);
+    return Math.min(CONFIG.maxSpeedCap, CONFIG.baseMaxSpeed * sizeSpeedScale());
   }
 
   const smalls = [];
@@ -327,6 +380,22 @@
     const vx = (dx/d) * speed + rand(-0.15, 0.15);
     const vy = (dy/d) * speed + rand(-0.15, 0.15);
     particles.push({ x: fromX, y: fromY, vx, vy, life, maxLife: life, hue, alpha, size: rand(0.8, 2.2) });
+  }
+
+  // jet particles (thrust visuals) - no-op safe if visuals are disabled
+  function addJetParticles(x, y, backDirX, backDirY, power){
+    // backDir should point opposite to input direction
+    const amt = Math.max(2, Math.min(18, Math.floor(power * 10)));
+    const bx = backDirX, by = backDirY;
+    const bLen = Math.max(0.001, hypot(bx, by));
+    const nx = bx / bLen, ny = by / bLen;
+    for (let i=0;i<amt;i++){
+      const ox = x + nx * rand(2, 10) + rand(-2,2);
+      const oy = y + ny * rand(2, 10) + rand(-2,2);
+      const tx = x + nx * rand(18, 40);
+      const ty = y + ny * rand(18, 40);
+      spawnParticle(ox, oy, tx, ty, rand(0.6, 2.6), rand(12, 28), rand(25, 55), rand(0.25, 0.65));
+    }
   }
 
   // ---------- Rendering helpers
@@ -471,19 +540,7 @@
   }
 
   // ---------- Input
-  let boostBySpace = false;
-  let boostByTouch = false;
-  function boostActive(){ return boostBySpace || boostByTouch; }
-
-  window.addEventListener('keydown', (e) => {
-    if (e.code === 'Space') boostBySpace = true;
-    if (e.code === 'KeyR') reset();
-  });
-  window.addEventListener('keyup', (e) => {
-    if (e.code === 'Space') boostBySpace = false;
-  });
-
-  function normalize(dx, dy) {
+    function normalize(dx, dy) {
     const d = Math.max(1e-6, hypot(dx, dy));
     return { x: dx / d, y: dy / d, d };
   }
@@ -493,16 +550,18 @@
   }
 
   
-  function applyImpulseToWorld(wx, wy, boostFlag) {
+  function applyImpulseToWorld(wx, wy) {
     const {dx, dy} = torusDelta(player.x, player.y, wx, wy);
     const dir = normalize(dx, dy);
 
+    const cap = maxSpeedNow();
     const vmag = hypot(player.vx, player.vy);
-    let vdirx = 0, vdiry = 0;
-    if (vmag > 0.15) { vdirx = player.vx / vmag; vdiry = player.vy / vmag; }
+    const vfrac = clamp(vmag / Math.max(1e-6, cap), 0, 1);
 
+    // Determine if this input is opposite to current movement (for "reverse thrust" braking).
     let brake = false;
     if (vmag > 0.4) {
+      const vdirx = player.vx / vmag, vdiry = player.vy / vmag;
       const dot = dir.x * vdirx + dir.y * vdiry;
       brake = (dot < -0.25);
     }
@@ -510,41 +569,65 @@
     const now = performance.now();
     const dtMs = now - player.lastClickAt;
 
-    let comboAdd = 0;
+    // combo detection (same window/angle tuning as before)
+    let comboHit = false;
     if (dtMs <= CONFIG.comboWindowMs) {
       const lastN = normalize(player.lastClickDirX, player.lastClickDirY);
       const ang = angleBetween(lastN.x, lastN.y, dir.x, dir.y);
       const angDeg = ang * 180 / Math.PI;
-      if (angDeg <= CONFIG.comboAngleDeg) comboAdd = CONFIG.comboBonusPerHit;
-      else player.comboBonus *= 0.35;
+      comboHit = (angDeg <= CONFIG.comboAngleDeg);
+      if (!comboHit) player.comboBonus *= 0.35;
     } else {
       player.comboBonus *= 0.6;
     }
-    player.comboBonus = clamp(player.comboBonus + comboAdd, 0, CONFIG.comboBonusCap);
+    if (comboHit) player.comboBonus = clamp(player.comboBonus + CONFIG.comboBonusPerHit, 0, CONFIG.comboBonusCap);
 
-    let impulse = CONFIG.impulseStrength;
-    if (dtMs <= 180) impulse *= 0.66;
+    // --- Accel curve: make spam less explosive and require absolute time to reach high speed.
+    // Base impulse is reduced and further attenuated as speed approaches cap.
+    let impulse = CONFIG.impulseStrength * 0.65;
+    const ease = Math.pow(0.25 + 0.75 * (1 - vfrac), 1.2); // 1 -> slow near cap
+    impulse *= ease;
 
-    if (brake) impulse = clamp(impulse, CONFIG.impulseStrength*0.75, CONFIG.impulseStrength*3.2);
+    // Very fast re-taps get slightly less immediate impulse (keeps the existing "delayed/gradual" feel).
+    if (dtMs <= 180) impulse *= 0.60;
 
-    if (boostFlag) impulse *= CONFIG.boostMultiplier;
-    if (!brake) impulse *= (1 + player.comboBonus);
-
-    if (brake) {
-      player.vx *= 0.45;
-      player.vy *= 0.45;
-      player.comboBonus *= 0.55;
-    }
-
+    // Apply base impulse in the input direction (accelerate or decelerate depending on alignment).
     player.vx += dir.x * impulse;
     player.vy += dir.y * impulse;
+
+    // BOOST (B 방식): for a combo input, add ONE extra impulse that only increases speed.
+    // Gate: only starts contributing after reaching a certain speed band, and ramps in smoothly.
+    if (comboHit) {
+      const gate = 0.55; // start after 55% of max speed
+      const ramp = clamp((vfrac - gate) / Math.max(1e-6, (1 - gate)), 0, 1);
+      if (ramp > 0) {
+        const vmag2 = hypot(player.vx, player.vy);
+        let vdx = dir.x, vdy = dir.y;
+        if (vmag2 > 0.15) { vdx = player.vx / vmag2; vdy = player.vy / vmag2; }
+        const extra = impulse * ramp; // ramps from 0 -> 1x impulse
+        player.vx += vdx * extra;
+        player.vy += vdy * extra;
+      }
+    }
+
+    // Steering assist (Option B): clicking slightly off-forward can still bias direction,
+    // but steering NEVER changes speed magnitude.
+    {
+      const sp3 = hypot(player.vx, player.vy);
+      if (sp3 > 0.05) {
+        const cx = player.vx / sp3, cy = player.vy / sp3;
+        const ang = angleBetween(cx, cy, dir.x, dir.y) * 180 / Math.PI;
+        const strength = (ang <= STEER_FORWARD_DEG) ? STEER_FORWARD_SCALE : 1;
+        requestSteerAttempt(dir.x, dir.y, strength);
+      }
+    }
 
     player.lastClickAt = now;
     player.lastClickDirX = dir.x;
     player.lastClickDirY = dir.y;
     player.clickPingAt = now;
 
-    addJetParticles(player.x, player.y, -dir.x, -dir.y, impulse*0.18);
+    addJetParticles(player.x, player.y, -dir.x, -dir.y, impulse * 0.18);
 
     // trail
     player.trail.push({ x: player.x, y: player.y, t: now });
@@ -552,27 +635,61 @@
   }
 
   // --- Pointer / Touch controls
-  // PC: pointerdown => impulse
-  // Mobile: tap => impulse, long-press => boosted impulse, pinch(2 fingers) => zoom
+  // - Tap/Click: impulse (accel / reverse-thrust brake)
+  // - Combo within window: extra impulse (B 방식) but only after reaching a speed band (no instant jump)
+  // - Hold + Drag: steering only (no accel). Holding still does nothing.
+  // - Pinch (2 fingers): zoom
 
   const activePointers = new Map(); // pointerId -> {x,y,type}
-  let pinchState = null;            // {dist, zoom, midX, midY}
-  let touchTap = null;              // {pointerId, sx, sy, downAt, moved, canceled, longTimer}
 
-  const LONG_TAP_MS = 420;
-  // Continuous boost for touch long-press
-  const touchBoost = { active:false, wx:0, wy:0, pointerId:null };
+  // Pinch state
+  let pinchState = null; // {dist, zoom, midX, midY}
 
+  // Tap/Drag state
+  let primaryPointer = null; // {id, type, sx, sy, downClientX, downClientY, moved, lastSX, lastSY}
   const TAP_MOVE_PX = 14;
+
+  // Steering request (only when a steer attempt is allowed by rate-limit)
+  // NOTE: steering changes direction ONLY (speed magnitude preserved).
+  const steer = { dirX: 0, dirY: 0, lastUpdate: -1, lastApply: -1, strength: 1 };
+
+  // Steering is applied for a short "burst" after each allowed attempt.
+  const STEER_ACTIVE_MS = 90;      // how long the burst remains active after an attempt (ms)
+  const STEER_RATE = 4.2;          // rad/sec base (smooth turn rate)
+  const STEER_COOLDOWN_MS = CONFIG.comboWindowMs; // match double-click / combo timing
+  const STEER_FORWARD_DEG = 20;    // forward cone for "mostly forward" inputs
+  const STEER_FORWARD_SCALE = 0.35;// weak steering inside forward cone (Option B)
+  const STEER_SPEED_THRESHOLD = 1.0; // below this, steering behaves like before
+  const STEER_SPEED_SCALE = 1.7;     // above threshold, steering gets harder as speed rises
 
   function canvasPointFromEvent(e){
     const rect = canvas.getBoundingClientRect();
-    return { sx: e.clientX - rect.left, sy: e.clientY - rect.top };
+    return { sx: e.clientX - rect.left, sy: e.clientY - rect.top, rect };
   }
 
-  function cancelTouchTap(){
-    if (touchTap?.longTimer) clearTimeout(touchTap.longTimer);
-    touchTap = null;
+  function updateSteerFromScreen(sx, sy){
+    const w = screenToWorld(sx, sy);
+    const {dx, dy} = torusDelta(player.x, player.y, w.x, w.y);
+    const n = normalize(dx, dy);
+
+    // Determine steering strength (Option B): if input is mostly forward, steer weaker.
+    let strength = 1;
+    const sp = hypot(player.vx, player.vy);
+    if (sp > 0.4) {
+      const cx = player.vx / sp, cy = player.vy / sp;
+      const ang = angleBetween(cx, cy, n.x, n.y) * 180 / Math.PI;
+      if (ang <= STEER_FORWARD_DEG) strength = STEER_FORWARD_SCALE;
+    }
+    requestSteerAttempt(n.x, n.y, strength);
+  }
+
+  function requestSteerAttempt(dirX, dirY, strength){
+    const now = performance.now();
+    if (steer.lastApply > 0 && (now - steer.lastApply) < STEER_COOLDOWN_MS) return;
+    steer.dirX = dirX; steer.dirY = dirY;
+    steer.strength = strength;
+    steer.lastUpdate = now;
+    steer.lastApply = now;
   }
 
   function startOrUpdatePinch(){
@@ -608,120 +725,95 @@
   canvas.addEventListener('pointerdown', (e) => {
     canvas.setPointerCapture?.(e.pointerId);
     if ((e.pointerType || '') === 'touch') e.preventDefault();
+
     const { sx, sy } = canvasPointFromEvent(e);
     activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY, type: e.pointerType || 'mouse' });
 
-    // Touch: wait to decide tap vs long-press vs pinch
+    // Touch: if second finger appears -> pinch mode
     if ((e.pointerType || '') === 'touch') {
-      // if this is the 2nd touch, this becomes a pinch; cancel any pending tap
       if ([...activePointers.values()].filter(p => p.type === 'touch').length >= 2) {
-        cancelTouchTap();
+        primaryPointer = null; // cancel single-finger tap/drag
         startOrUpdatePinch();
         return;
       }
-
-      cancelTouchTap();
-      touchTap = {
-        pointerId: e.pointerId,
-        sx, sy,
-        downAt: performance.now(),
-        moved: false,
-        canceled: false,
-        longTimer: null
-      };
-
-      touchTap.longTimer = setTimeout(() => {
-        if (!touchTap || touchTap.canceled || touchTap.moved) return;
-        // long-tap => boosted impulse (use last known point)
-        const w = screenToWorld(touchTap.sx, touchTap.sy);
-        // Activate boost while finger is held (mobile)
-        boostByTouch = true;
-        touchBoost.active = true;
-        touchBoost.wx = w.x;
-        touchBoost.wy = w.y;
-        touchBoost.pointerId = e.pointerId;
-
-        // Immediate boosted impulse on activation
-        applyImpulseToWorld(w.x, w.y, true);
-
-        touchTap.canceled = true; // consume (don't also fire tap on release)
-      }, LONG_TAP_MS);
-
-      return;
     }
 
-    // Mouse / pen: immediate impulse (boost via space)
-    const w = screenToWorld(sx, sy);
-    applyImpulseToWorld(w.x, w.y, boostActive());
+    // Track primary pointer for tap vs drag steering
+    primaryPointer = {
+      id: e.pointerId,
+      type: e.pointerType || 'mouse',
+      sx, sy,
+      downClientX: e.clientX,
+      downClientY: e.clientY,
+      moved: false,
+      lastSX: sx,
+      lastSY: sy
+    };
   });
 
   canvas.addEventListener('pointermove', (e) => {
     if ((e.pointerType || '') === 'touch') e.preventDefault();
     if (!activePointers.has(e.pointerId)) return;
+
     activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY, type: e.pointerType || 'mouse' });
 
-    // pinch zoom
+    // Pinch zoom (touch only)
     if ((e.pointerType || '') === 'touch') {
       startOrUpdatePinch();
+      if ([...activePointers.values()].filter(p => p.type === 'touch').length >= 2) return;
+    }
 
-      // If boosting, update target as finger moves (single-touch)
-      if (touchBoost.active && touchBoost.pointerId === e.pointerId && activePointers.size === 1) {
-        const { sx, sy } = canvasPointFromEvent(e);
-        const w = screenToWorld(sx, sy);
-        touchBoost.wx = w.x;
-        touchBoost.wy = w.y;
-      }
+    // Single pointer steering (hold + drag only)
+    if (!primaryPointer || primaryPointer.id !== e.pointerId) return;
 
-      // mark tap as moved (so it won't trigger)
-      if (touchTap && touchTap.pointerId === e.pointerId && !touchTap.canceled) {
-        const { sx, sy } = canvasPointFromEvent(e);
-        const dx = sx - touchTap.sx, dy = sy - touchTap.sy;
-        if (Math.hypot(dx, dy) > TAP_MOVE_PX) touchTap.moved = true;
-      }
+    const { sx, sy } = canvasPointFromEvent(e);
+
+    // mark as moved if it exceeds tap slop
+    const dx0 = sx - primaryPointer.sx;
+    const dy0 = sy - primaryPointer.sy;
+    if (Math.hypot(dx0, dy0) > TAP_MOVE_PX) primaryPointer.moved = true;
+
+    // Only steer when the pointer position CHANGES while held.
+    const dmove = Math.hypot(sx - primaryPointer.lastSX, sy - primaryPointer.lastSY);
+    if (dmove > 1.0) {
+      updateSteerFromScreen(sx, sy);
+      primaryPointer.lastSX = sx;
+      primaryPointer.lastSY = sy;
     }
   });
+
+  function finishPrimaryAsTap(){
+    if (!primaryPointer) return;
+    if (primaryPointer.moved) return; // drag steering only (no accel)
+    const w = screenToWorld(primaryPointer.sx, primaryPointer.sy);
+    applyImpulseToWorld(w.x, w.y);
+  }
 
   canvas.addEventListener('pointerup', (e) => {
     if ((e.pointerType || '') === 'touch') e.preventDefault();
     if (activePointers.has(e.pointerId)) activePointers.delete(e.pointerId);
 
+    // Leaving pinch mode
     if ((e.pointerType || '') === 'touch') {
-      // leaving pinch mode
       if ([...activePointers.values()].filter(p => p.type === 'touch').length < 2) pinchState = null;
+    }
 
-      // tap => impulse (only if not consumed by long-tap and not moved)
-      if (touchTap && touchTap.pointerId === e.pointerId) {
-        const consumed = touchTap.canceled || touchTap.moved;
-        if (touchTap.longTimer) clearTimeout(touchTap.longTimer);
-        if (!consumed) {
-          const w = screenToWorld(touchTap.sx, touchTap.sy);
-          applyImpulseToWorld(w.x, w.y, false);
-        }
-        touchTap = null;
-      }
-
-      // stop touch boost when finger lifts
-      if (touchBoost.active && touchBoost.pointerId === e.pointerId) {
-        touchBoost.active = false;
-        touchBoost.pointerId = null;
-        boostByTouch = false;
-      }
+    if (primaryPointer && primaryPointer.id === e.pointerId) {
+      // Tap (no movement) => impulse. Drag => steering only.
+      finishPrimaryAsTap();
+      primaryPointer = null;
     }
   });
 
   canvas.addEventListener('pointercancel', (e) => {
     if (activePointers.has(e.pointerId)) activePointers.delete(e.pointerId);
     pinchState = null;
-    if (touchTap && touchTap.pointerId === e.pointerId) cancelTouchTap();
-    if (touchBoost.active && touchBoost.pointerId === e.pointerId) {
-      touchBoost.active = false;
-      touchBoost.pointerId = null;
-      boostByTouch = false;
-    }
+    if (primaryPointer && primaryPointer.id === e.pointerId) primaryPointer = null;
   });
 
 
   // ---------- Counters
+
   let absorbedCount = 0;
   let survivedSec = 0;
 
@@ -813,14 +905,38 @@
     lastT = t;
     survivedSec += dt;
 
-    // touch long-press boost: continuous thrust toward finger
-    if (touchBoost.active && boostByTouch) {
-      const { dx: cdx, dy: cdy } = torusDelta(player.x, player.y, touchBoost.wx, touchBoost.wy);
-      const dir = normalize(cdx, cdy);
-      const accel = CONFIG.impulseStrength * CONFIG.boostMultiplier * 0.05 * (dt * 60);
-      player.vx += dir.x * accel;
-      player.vy += dir.y * accel;
-      addJetParticles(player.x, player.y, -dir.x, -dir.y, accel*0.25);
+
+    // steering (hold+drag): smoothly rotate velocity direction toward the latest dragged target.
+    {
+      const now = performance.now();
+      if (steer.lastUpdate > 0 && (now - steer.lastUpdate) <= STEER_ACTIVE_MS) {
+        const sp = hypot(player.vx, player.vy);
+        if (sp > 0.02) {
+          const cx = player.vx / sp, cy = player.vy / sp;
+          const tx = steer.dirX, ty = steer.dirY;
+          const dot = clamp(cx*tx + cy*ty, -1, 1);
+          const ang = Math.acos(dot);
+          if (ang > 1e-4) {
+            // Speed-dependent steering difficulty: above threshold, turning gets harder.
+            let speedFactor = 1;
+            if (sp > STEER_SPEED_THRESHOLD) {
+              speedFactor = 1 / (1 + (sp - STEER_SPEED_THRESHOLD) / STEER_SPEED_SCALE);
+              speedFactor = clamp(speedFactor, 0.15, 1);
+            }
+            const maxAng = STEER_RATE * dt * steer.strength * speedFactor;
+            const stepAng = Math.min(ang, maxAng);
+            const cross = cx*ty - cy*tx;
+            const sgn = (cross >= 0) ? 1 : -1;
+            const c = Math.cos(stepAng);
+            const s = Math.sin(stepAng) * sgn;
+            // rotate (cx,cy) by stepAng toward target sign
+            const nx = cx*c - cy*s;
+            const ny = cx*s + cy*c;
+            player.vx = nx * sp;
+            player.vy = ny * sp;
+          }
+        }
+      }
     }
 
     // move player (constant inertia)
@@ -1039,7 +1155,7 @@
     // HUD
     const sp = hypot(player.vx, player.vy);
     const cls = (bhProximity === 'danger') ? 'danger' : (bhProximity === 'warn' ? 'warn' : '');
-    statsEl.innerHTML =
+    if (statsEl) statsEl.innerHTML =
       `질량: <b class="${cls}">${player.mass.toFixed(1)}</b>` +
       ` | 반지름: ${playerR().toFixed(1)}` +
       ` | 중력권: ${(playerR()*CONFIG.playerGravityRangeMult).toFixed(0)}` +
@@ -1052,6 +1168,7 @@
       ` | 생존: ${Math.floor(survivedSec)}s` +
       ` | 줌: ${camera.zoom.toFixed(2)}x`;
 
+    updateMinimalUI();
     requestAnimationFrame(step);
   }
 
@@ -1063,7 +1180,9 @@
   }
 
   init();
-  requestAnimationFrame(step);
+  
+  updateMinimalUI();
+requestAnimationFrame(step);
 })();
 </script>
 </body>
