@@ -184,16 +184,15 @@
     clickPingMs: 220,
   };
 
-  // ---------- World
+  // ---------- World (simulation space; fixed after first init)
   const world = { w: 1, h: 1 };
-  let __worldInitialized = false;
-  function initWorldSizeOnce() {
-    if (__worldInitialized) return;
-    world.w = window.innerWidth * CONFIG.worldScale;
-    world.h = window.innerHeight * CONFIG.worldScale;
-    __worldInitialized = true;
+  let worldInitialized = false;
+  function initWorldSizeOnce(){
+    if(worldInitialized) return;
+    world.w = Math.max(2000, window.innerWidth  * CONFIG.worldScale);
+    world.h = Math.max(2000, window.innerHeight * CONFIG.worldScale);
+    worldInitialized = true;
   }
-  initWorldSizeOnce();
 
   // ---------- Toroidal wrap
   function wrapPos(p) {
@@ -566,8 +565,8 @@
     if (pts.length !== 2) { pinchState = null; return; }
 
     const a = pts[0], b = pts[1];
-    const dx = a.x - b.x, dy = a.y - b.y;
-    const dist = Math.max(1e-6, Math.hypot(dx, dy));
+    const pdx = a.x - b.x, pdy = a.y - b.y;
+    const dist = Math.max(1e-6, Math.hypot(pdx, pdy));
     const midX = (a.x + b.x) * 0.5;
     const midY = (a.y + b.y) * 0.5;
 
@@ -586,9 +585,9 @@
     const after = screenToWorld(mx, my);
 
     // keep midpoint anchored
-    const {dx, dy} = torusDelta(after.x, after.y, before.x, before.y);
-    camera.x = (camera.x + dx + world.w) % world.w;
-    camera.y = (camera.y + dy + world.h) % world.h;
+    const {dx: cdx, dy: cdy} = torusDelta(after.x, after.y, before.x, before.y);
+    camera.x = (camera.x + cdx + world.w) % world.w;
+    camera.y = (camera.y + cdy + world.h) % world.h;
   }
 
   canvas.addEventListener('pointerdown', (e) => {
@@ -1001,6 +1000,7 @@
 
   // ---------- Start
   function init() {
+    initWorldSizeOnce();
     makeStars();
     reset();
   }
