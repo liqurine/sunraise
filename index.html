@@ -6,7 +6,7 @@
   <title>Planet Absorb — Bigger Black Holes + Wider Gravity + More Particles</title>
   <style>
     html, body { margin:0; padding:0; background:#000; overflow:hidden; }
-    canvas { display:block; touch-action:none; }
+    canvas { display:block; touch-action:none; user-select:none; -webkit-user-select:none; -webkit-touch-callout:none; }
     .hud{
       position:fixed; left:12px; top:12px;
       color:rgba(255,255,255,.88);
@@ -69,6 +69,14 @@
 <script>
 (() => {
   const canvas = document.getElementById('c');
+
+  // --- Mobile: prevent long-press selection/callout inside game area
+  canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+  document.addEventListener('selectstart', (e) => { if (e.target === canvas) e.preventDefault(); });
+  // iOS Safari sometimes fires these during pinch/zoom gestures
+  document.addEventListener('gesturestart', (e) => { if (e.target === canvas) e.preventDefault(); }, { passive:false });
+  document.addEventListener('gesturechange', (e) => { if (e.target === canvas) e.preventDefault(); }, { passive:false });
+  document.addEventListener('gestureend', (e) => { if (e.target === canvas) e.preventDefault(); }, { passive:false });
   const ctx = canvas.getContext('2d', { alpha:false });
   const statsEl = document.getElementById('stats');
   const resetBtn = document.getElementById('resetBtn');
@@ -592,6 +600,7 @@
 
   canvas.addEventListener('pointerdown', (e) => {
     canvas.setPointerCapture?.(e.pointerId);
+    if ((e.pointerType || '') === 'touch') e.preventDefault();
     const { sx, sy } = canvasPointFromEvent(e);
     activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY, type: e.pointerType || 'mouse' });
 
@@ -631,6 +640,7 @@
   });
 
   canvas.addEventListener('pointermove', (e) => {
+    if ((e.pointerType || '') === 'touch') e.preventDefault();
     if (!activePointers.has(e.pointerId)) return;
     activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY, type: e.pointerType || 'mouse' });
 
@@ -648,6 +658,7 @@
   });
 
   canvas.addEventListener('pointerup', (e) => {
+    if ((e.pointerType || '') === 'touch') e.preventDefault();
     if (activePointers.has(e.pointerId)) activePointers.delete(e.pointerId);
 
     if ((e.pointerType || '') === 'touch') {
