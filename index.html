@@ -1,0 +1,1013 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Planet Absorb — Bigger Black Holes + Wider Gravity + More Particles</title>
+  <style>
+    html, body { margin:0; padding:0; background:#000; overflow:hidden; }
+    canvas { display:block; touch-action:none; }
+    .hud{
+      position:fixed; left:12px; top:12px;
+      color:rgba(255,255,255,.88);
+      font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, "Noto Sans KR", Arial;
+      font-size:13px; line-height:1.35;
+      user-select:none;
+      background:rgba(0,0,0,.35);
+      padding:10px 12px; border-radius:10px;
+      border:1px solid rgba(255,255,255,.12);
+      backdrop-filter: blur(6px);
+      max-width: 760px;
+    }
+    .hud b{ color:#fff; }
+    .hud .row{ margin-top:6px; opacity:.95; }
+    .hud kbd{
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      background: rgba(255,255,255,0.12);
+      padding: 2px 6px; border-radius: 6px;
+      border: 1px solid rgba(255,255,255,0.14);
+    }
+    .warn { color: rgba(255,190,140,.98); }
+    .danger { color: rgba(255,120,120,.98); }
+  
+    .resetBtn{
+      position:fixed; right:12px; top:12px;
+      z-index:10;
+      padding:10px 12px;
+      border-radius:12px;
+      border:1px solid rgba(255,255,255,.22);
+      background:rgba(0,0,0,.35);
+      color:rgba(255,255,255,.92);
+      font:600 12px/1 ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,"Noto Sans KR",sans-serif;
+      letter-spacing:.06em;
+      backdrop-filter: blur(6px);
+      -webkit-backdrop-filter: blur(6px);
+      user-select:none;
+      touch-action: manipulation;
+    }
+    .resetBtn:active{ transform: translateY(1px); }
+
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<button id="resetBtn" class="resetBtn" type="button">RESET</button>
+
+<div class="hud">
+  <div><b>Planet Absorb</b> — 클릭 추진(관성) + 플레이어 중력권 + 블랙홀(느리면 포획 / 빠르면 스윙바이-속도고정)</div>
+  <div class="row">
+    조작:
+    <kbd>클릭/터치</kbd> 방향 추진(관성), <kbd>휠/핀치</kbd> 줌,
+    <kbd>Space/롱탭</kbd> 부스트, <kbd>R</kbd> 리셋
+  </div>
+  <div class="row">
+    변경: 블랙홀 크기 최대 5배(개체별 랜덤), 중력권 1.5배, 블랙홀 파티클 10배+
+  </div>
+  <div class="row" id="stats"></div>
+</div>
+
+<script>
+(() => {
+  const canvas = document.getElementById('c');
+  const ctx = canvas.getContext('2d', { alpha:false });
+  const statsEl = document.getElementById('stats');
+  const resetBtn = document.getElementById('resetBtn');
+
+  resetBtn.addEventListener('click', () => reset());
+
+  const DPR = Math.min(2, window.devicePixelRatio || 1);
+  function resize() {
+    canvas.width = Math.floor(window.innerWidth * DPR);
+    canvas.height = Math.floor(window.innerHeight * DPR);
+    canvas.style.width = window.innerWidth + 'px';
+    canvas.style.height = window.innerHeight + 'px';
+    canvas.style.touchAction = 'none';
+    ctx.setTransform(DPR,0,0,DPR,0,0);
+  }
+  window.addEventListener('resize', resize);
+  resize();
+
+  // ---------- Utils
+  const rand = (a,b)=> a + Math.random()*(b-a);
+  const clamp = (v,a,b)=> Math.max(a, Math.min(b,v));
+  const hypot = Math.hypot;
+
+  // ---------- CONFIG
+  const CONFIG = {
+    worldScale: 10,
+    camFollow: 0.10,
+    zoomMin: 0.35,
+    zoomMax: 2.4,
+    zoomWheelSpeed: 0.0012,
+
+    // player impulse (no damping)
+    impulseStrength: 0.62,
+    brakeMultiplier: 1.25,
+    turnMultiplier: 1.00,
+    boostMultiplier: 1.85,
+
+    // size-scaled speed (bigger = faster)
+    sizeSpeedExponent: 0.55,
+    baseMaxSpeed: 13.5,
+    maxSpeedCap: 28.0,
+
+    // combo
+    comboWindowMs: 180,
+    comboAngleDeg: 22,
+    comboBonusPerHit: 0.22,
+    comboBonusCap: 1.2,
+
+    // mass->radius
+    radiusK: 2.6,
+
+    // small planets
+    smallPlanetCount: 320,
+    smallMassMin: 2.0,
+    smallMassMax: 28.0,
+
+    // absorb
+    absorbGainMultiplier: 1.0,
+    playerMinMass: 10,
+
+    // black holes
+    blackHoleCount: 10,
+
+    // "기존 크기" 랜덤 범위 (이 값을 기반 r0로 잡고, r = r0 * (1~5))
+    bhRadiusMin: 12,
+    bhRadiusMax: 20,
+    bhSizeMaxFactor: 5.0,
+
+    // base strength (r0 기준) — 실제 strength는 크기 배수에 따라 보정
+    bhStrengthMin: 2600,
+    bhStrengthMax: 4200,
+
+    bhKillRadiusMultiplier: 1.15,
+    bhPullRadiusMultiplier: 16,
+    bhRangeMultiplier: 1.5,    // ✅ 블랙홀 영향 범위 1.5배
+
+    // speed-based mode switch
+    bhCaptureSpeed: 6.2,
+    bhCaptureRadiusFactor: 0.80,
+
+    // Capture mode (slow): pull
+    bhCapturePull: 1.65,
+    bhCaptureMaxAccel: 2.2,
+    bhCaptureSwirl: 0.25,
+
+    // Swing-by mode (fast): KEEP SPEED, only bend direction
+    bhSwingTurnRate: 2.6,
+    bhSwingMaxTurnPerSec: 2.4,
+    bhSwingPullAssist: 0.18,
+
+    // falloff
+    bhFalloffPower: 1.2,
+
+    // drain
+    bhDrainPerSec: 16,
+    bhDrainNearMultiplier: 3.4,
+
+    // ✅ BH particle boost (10배+)
+    bhParticleChanceBase: 1.0,   // 기존 0.10*fall -> 이제 fall 자체로(≈10배)
+    bhParticleExtraClose: 1.0,   // 가까울 때 추가 1개 더 나올 확률 가중
+
+    // player gravity field
+    playerGravityRangeMult: 6.0,
+    playerGravityStrength: 48.0,
+    playerGravityMaxAccel: 1.35,
+    playerGravityFalloffPower: 1.15,
+
+    // visuals
+    starCount: 520,
+    trailLength: 22,
+    particleMax: 3000,           // 파티클 늘리니 상한도 함께↑
+    particleSpawnPerSec: 140,    // (참고용)
+    clickPingMs: 220,
+  };
+
+  // ---------- World
+  const world = { w: 1, h: 1 };
+  let __worldInitialized = false;
+  function initWorldSizeOnce() {
+    if (__worldInitialized) return;
+    world.w = window.innerWidth * CONFIG.worldScale;
+    world.h = window.innerHeight * CONFIG.worldScale;
+    __worldInitialized = true;
+  }
+  initWorldSizeOnce();
+
+  // ---------- Toroidal wrap
+  function wrapPos(p) {
+    if (p.x < 0) p.x += world.w;
+    if (p.x >= world.w) p.x -= world.w;
+    if (p.y < 0) p.y += world.h;
+    if (p.y >= world.h) p.y -= world.h;
+  }
+  function torusDelta(ax, ay, bx, by) {
+    let dx = bx - ax;
+    let dy = by - ay;
+    if (dx >  world.w/2) dx -= world.w;
+    if (dx < -world.w/2) dx += world.w;
+    if (dy >  world.h/2) dy -= world.h;
+    if (dy < -world.h/2) dy += world.h;
+    return { dx, dy };
+  }
+  function torusDist(ax, ay, bx, by) {
+    const {dx, dy} = torusDelta(ax, ay, bx, by);
+    return hypot(dx, dy);
+  }
+
+  // ---------- Camera
+  const camera = { x: 0, y: 0, zoom: 1.0 };
+  function screenToWorld(sx, sy) {
+    const cx = window.innerWidth * 0.5;
+    const cy = window.innerHeight * 0.5;
+    const wx = camera.x + (sx - cx) / camera.zoom;
+    const wy = camera.y + (sy - cy) / camera.zoom;
+    return {
+      x: ((wx % world.w) + world.w) % world.w,
+      y: ((wy % world.h) + world.h) % world.h
+    };
+  }
+  canvas.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    const rect = canvas.getBoundingClientRect();
+    const mx = e.clientX - rect.left;
+    const my = e.clientY - rect.top;
+
+    const before = screenToWorld(mx, my);
+    const delta = -e.deltaY * CONFIG.zoomWheelSpeed;
+    camera.zoom = clamp(camera.zoom * (1 + delta), CONFIG.zoomMin, CONFIG.zoomMax);
+
+    const after = screenToWorld(mx, my);
+    const {dx, dy} = torusDelta(after.x, after.y, before.x, before.y);
+    camera.x = ((camera.x + dx) % world.w + world.w) % world.w;
+    camera.y = ((camera.y + dy) % world.h + world.h) % world.h;
+  }, { passive:false });
+
+  // ---------- Stars
+  let stars = [];
+  function makeStars() {
+    stars = [];
+    for (let i=0;i<CONFIG.starCount;i++){
+      stars.push({ x: rand(0, world.w), y: rand(0, world.h), r: rand(0.6, 1.8), a: rand(0.20, 0.85) });
+    }
+  }
+
+  // ---------- Entities
+  const radiusFromMass = (m)=> CONFIG.radiusK * Math.sqrt(Math.max(0.01, m));
+
+  const player = {
+    x: 0, y: 0, vx: 0, vy: 0, mass: 90,
+    trail: [],
+    lastClickAt: 0,
+    lastClickDirX: 1,
+    lastClickDirY: 0,
+    comboBonus: 0,
+    clickPingAt: 0,
+    clickDirX: 1,
+    clickDirY: 0,
+  };
+
+  const playerR = ()=> radiusFromMass(player.mass);
+  const refR = ()=> radiusFromMass(90);
+
+  function sizeSpeedScale() {
+    const s = Math.pow(playerR() / refR(), CONFIG.sizeSpeedExponent);
+    return clamp(s, 0.75, 3.2);
+  }
+  function maxSpeedNow() {
+    return Math.min(CONFIG.maxSpeedCap, CONFIG.baseMaxSpeed * sizeSpeedScale());
+  }
+
+  const smalls = [];
+  function spawnSmall(avoidX, avoidY, avoidR) {
+    for (let tries=0; tries<120; tries++){
+      const mass = rand(CONFIG.smallMassMin, CONFIG.smallMassMax);
+      const r = radiusFromMass(mass);
+      const x = rand(0, world.w);
+      const y = rand(0, world.h);
+      const d = torusDist(x, y, avoidX, avoidY);
+      if (d > (avoidR + r + 120)) {
+        return { x,y, vx: rand(-0.25,0.25), vy: rand(-0.25,0.25), mass, hue: rand(190,235), trail: [] };
+      }
+    }
+    const mass = rand(CONFIG.smallMassMin, CONFIG.smallMassMax);
+    return { x: rand(0,world.w), y: rand(0,world.h), vx:0, vy:0, mass, hue: rand(190,235), trail: [] };
+  }
+
+  const blackholes = [];
+  function spawnStaticBlackHole() {
+    // ✅ "이전(기존) 크기" r0를 뽑고, 1~5배 랜덤으로 최종 반지름 결정
+    const r0 = rand(CONFIG.bhRadiusMin, CONFIG.bhRadiusMax);
+    const factor = rand(1.0, CONFIG.bhSizeMaxFactor);
+    const r = r0 * factor;
+
+    // ✅ 크기가 커지면 체감상 영향도도 커져야 자연스러움
+    // (너무 과하면 튜닝이 어려워서 완만한 지수)
+    const baseStrength = rand(CONFIG.bhStrengthMin, CONFIG.bhStrengthMax);
+    const strength = baseStrength * Math.pow(factor, 1.15);
+
+    return { x: rand(0, world.w), y: rand(0, world.h), r, strength, factor };
+  }
+
+  // particles (vibe)
+  const particles = [];
+  function spawnParticle(fromX, fromY, toX, toY, speed, life, hue, alpha) {
+    if (particles.length >= CONFIG.particleMax) return;
+    const {dx, dy} = torusDelta(fromX, fromY, toX, toY);
+    const d = Math.max(0.001, hypot(dx,dy));
+    const vx = (dx/d) * speed + rand(-0.15, 0.15);
+    const vy = (dy/d) * speed + rand(-0.15, 0.15);
+    particles.push({ x: fromX, y: fromY, vx, vy, life, maxLife: life, hue, alpha, size: rand(0.8, 2.2) });
+  }
+
+  // ---------- Rendering helpers
+  function shiftIntoView(x, y) {
+    const {dx, dy} = torusDelta(camera.x, camera.y, x, y);
+    return { x: camera.x + dx, y: camera.y + dy };
+  }
+  function beginCamera() {
+    ctx.fillStyle = '#000';
+    ctx.fillRect(0,0,window.innerWidth, window.innerHeight);
+    const cx = window.innerWidth * 0.5;
+    const cy = window.innerHeight * 0.5;
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.scale(camera.zoom, camera.zoom);
+    ctx.translate(-camera.x, -camera.y);
+  }
+  function endCamera() { ctx.restore(); }
+
+  function drawStars() {
+    const viewHalfW = (window.innerWidth * 0.5) / camera.zoom;
+    const viewHalfH = (window.innerHeight * 0.5) / camera.zoom;
+    const pad = 60;
+    for (const s of stars) {
+      const p = shiftIntoView(s.x, s.y);
+      if (p.x < camera.x - viewHalfW - pad || p.x > camera.x + viewHalfW + pad ||
+          p.y < camera.y - viewHalfH - pad || p.y > camera.y + viewHalfH + pad) continue;
+      ctx.fillStyle = `rgba(255,255,255,${s.a})`;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, s.r, 0, Math.PI*2);
+      ctx.fill();
+    }
+  }
+
+  function drawTrail(trail, baseHue, alphaBase) {
+    if (trail.length < 2) return;
+    for (let i=1; i<trail.length; i++) {
+      const a = (i / trail.length) * alphaBase;
+      const p0 = trail[i-1], p1 = trail[i];
+      ctx.strokeStyle = `hsla(${baseHue}, 90%, 70%, ${a})`;
+      ctx.lineWidth = 1.0 / camera.zoom;
+      ctx.beginPath();
+      ctx.moveTo(p0.x, p0.y);
+      ctx.lineTo(p1.x, p1.y);
+      ctx.stroke();
+    }
+  }
+
+  function drawSmall(s) {
+    const r = radiusFromMass(s.mass);
+    const p = shiftIntoView(s.x, s.y);
+    drawTrail(s.trail, s.hue, 0.16);
+
+    const glow = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, r * 2.2);
+    glow.addColorStop(0, `hsla(${s.hue}, 90%, 70%, 0.22)`);
+    glow.addColorStop(1, `hsla(${s.hue}, 90%, 50%, 0)`);
+    ctx.fillStyle = glow;
+    ctx.beginPath(); ctx.arc(p.x, p.y, r * 2.2, 0, Math.PI*2); ctx.fill();
+
+    const core = ctx.createRadialGradient(p.x - r*0.25, p.y - r*0.25, r*0.15, p.x, p.y, r);
+    core.addColorStop(0, `hsla(${s.hue}, 90%, 78%, 1)`);
+    core.addColorStop(1, `hsla(${s.hue}, 90%, 55%, 1)`);
+    ctx.fillStyle = core;
+    ctx.beginPath(); ctx.arc(p.x, p.y, r, 0, Math.PI*2); ctx.fill();
+  }
+
+  function drawPlayer() {
+    const r = playerR();
+    const p = shiftIntoView(player.x, player.y);
+
+    drawTrail(player.trail, 32, 0.22);
+
+    // player gravity ring
+    const gR = r * CONFIG.playerGravityRangeMult;
+    ctx.strokeStyle = 'rgba(255,180,90,0.18)';
+    ctx.lineWidth = 1.2 / camera.zoom;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, gR, 0, Math.PI*2);
+    ctx.stroke();
+
+    const glow = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, r*3.0);
+    glow.addColorStop(0, 'rgba(255,200,120,0.32)');
+    glow.addColorStop(0.35,'rgba(255,140,60,0.16)');
+    glow.addColorStop(1,'rgba(255,120,40,0)');
+    ctx.fillStyle = glow;
+    ctx.beginPath(); ctx.arc(p.x, p.y, r*3.0, 0, Math.PI*2); ctx.fill();
+
+    const core = ctx.createRadialGradient(p.x - r*0.25, p.y - r*0.25, r*0.18, p.x, p.y, r);
+    core.addColorStop(0,'rgba(255,235,170,1)');
+    core.addColorStop(0.55,'rgba(255,165,70,1)');
+    core.addColorStop(1,'rgba(210,75,15,1)');
+    ctx.fillStyle = core;
+    ctx.beginPath(); ctx.arc(p.x, p.y, r, 0, Math.PI*2); ctx.fill();
+
+    const now = performance.now();
+    if (now - player.clickPingAt < CONFIG.clickPingMs) {
+      const len = (r * 2.2);
+      ctx.strokeStyle = 'rgba(255,255,255,0.18)';
+      ctx.lineWidth = 2 / camera.zoom;
+      ctx.beginPath();
+      ctx.moveTo(p.x, p.y);
+      ctx.lineTo(p.x + player.clickDirX * len, p.y + player.clickDirY * len);
+      ctx.stroke();
+    }
+  }
+
+  function drawBlackHole(bh) {
+    const p = shiftIntoView(bh.x, bh.y);
+    const r = bh.r;
+    const pullR = r * CONFIG.bhPullRadiusMultiplier * CONFIG.bhRangeMultiplier; // ✅ 1.5배
+    const killR = r * CONFIG.bhKillRadiusMultiplier;
+
+    const ring = ctx.createRadialGradient(p.x, p.y, killR, p.x, p.y, pullR);
+    ring.addColorStop(0, 'rgba(120,180,255,0.14)');
+    ring.addColorStop(1, 'rgba(120,180,255,0)');
+    ctx.fillStyle = ring;
+    ctx.beginPath(); ctx.arc(p.x, p.y, pullR, 0, Math.PI*2); ctx.fill();
+
+    const halo = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, r*3.8);
+    halo.addColorStop(0, 'rgba(90,150,255,0.22)');
+    halo.addColorStop(0.45,'rgba(120,200,255,0.10)');
+    halo.addColorStop(1,'rgba(120,200,255,0)');
+    ctx.fillStyle = halo;
+    ctx.beginPath(); ctx.arc(p.x, p.y, r*3.8, 0, Math.PI*2); ctx.fill();
+
+    ctx.fillStyle = 'rgba(0,0,0,1)';
+    ctx.beginPath(); ctx.arc(p.x, p.y, r, 0, Math.PI*2); ctx.fill();
+    ctx.strokeStyle = 'rgba(170,220,255,0.35)';
+    ctx.lineWidth = 1 / camera.zoom;
+    ctx.beginPath(); ctx.arc(p.x, p.y, r, 0, Math.PI*2); ctx.stroke();
+  }
+
+  function drawParticles() {
+    for (const pt of particles) {
+      const p = shiftIntoView(pt.x, pt.y);
+      const a = pt.alpha * (pt.life / pt.maxLife);
+      ctx.fillStyle = `hsla(${pt.hue}, 90%, 70%, ${a})`;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, pt.size, 0, Math.PI*2);
+      ctx.fill();
+    }
+  }
+
+  // ---------- Input
+  let boost = false;
+  window.addEventListener('keydown', (e) => {
+    if (e.code === 'Space') boost = true;
+    if (e.code === 'KeyR') reset();
+  });
+  window.addEventListener('keyup', (e) => {
+    if (e.code === 'Space') boost = false;
+  });
+
+  function normalize(dx, dy) {
+    const d = Math.max(1e-6, hypot(dx, dy));
+    return { x: dx / d, y: dy / d, d };
+  }
+  function angleBetween(ax, ay, bx, by) {
+    const dot = clamp(ax*bx + ay*by, -1, 1);
+    return Math.acos(dot);
+  }
+
+  
+  function applyImpulseToWorld(wx, wy, boostFlag) {
+    const {dx, dy} = torusDelta(player.x, player.y, wx, wy);
+    const dir = normalize(dx, dy);
+
+    const vmag = hypot(player.vx, player.vy);
+    let vdirx = 0, vdiry = 0;
+    if (vmag > 0.15) { vdirx = player.vx / vmag; vdiry = player.vy / vmag; }
+
+    let brake = false;
+    if (vmag > 0.4) {
+      const dot = dir.x * vdirx + dir.y * vdiry;
+      brake = (dot < -0.25);
+    }
+
+    const now = performance.now();
+    const dtMs = now - player.lastClickAt;
+
+    let comboAdd = 0;
+    if (dtMs <= CONFIG.comboWindowMs) {
+      const lastN = normalize(player.lastClickDirX, player.lastClickDirY);
+      const ang = angleBetween(lastN.x, lastN.y, dir.x, dir.y);
+      const angDeg = ang * 180 / Math.PI;
+      if (angDeg <= CONFIG.comboAngleDeg) comboAdd = CONFIG.comboBonusPerHit;
+      else player.comboBonus *= 0.35;
+    } else {
+      player.comboBonus *= 0.6;
+    }
+    player.comboBonus = clamp(player.comboBonus + comboAdd, 0, CONFIG.comboBonusCap);
+
+    let impulse = CONFIG.impulseStrength;
+    if (dtMs <= 180) impulse *= 0.66;
+
+    if (brake) impulse = clamp(impulse, CONFIG.impulseStrength*0.75, CONFIG.impulseStrength*3.2);
+
+    if (boostFlag) impulse *= CONFIG.boostMultiplier;
+    if (!brake) impulse *= (1 + player.comboBonus);
+
+    if (brake) {
+      player.vx *= 0.45;
+      player.vy *= 0.45;
+      player.comboBonus *= 0.55;
+    }
+
+    player.vx += dir.x * impulse;
+    player.vy += dir.y * impulse;
+
+    player.lastClickAt = now;
+    player.lastClickDirX = dir.x;
+    player.lastClickDirY = dir.y;
+    player.clickPingAt = now;
+
+    addJetParticles(player.x, player.y, -dir.x, -dir.y, impulse*0.18);
+
+    // trail
+    player.trail.push({ x: player.x, y: player.y, t: now });
+    while (player.trail.length > CONFIG.trailMax) player.trail.shift();
+  }
+
+  // --- Pointer / Touch controls
+  // PC: pointerdown => impulse
+  // Mobile: tap => impulse, long-press => boosted impulse, pinch(2 fingers) => zoom
+
+  const activePointers = new Map(); // pointerId -> {x,y,type}
+  let pinchState = null;            // {dist, zoom, midX, midY}
+  let touchTap = null;              // {pointerId, sx, sy, downAt, moved, canceled, longTimer}
+
+  const LONG_TAP_MS = 420;
+  const TAP_MOVE_PX = 14;
+
+  function canvasPointFromEvent(e){
+    const rect = canvas.getBoundingClientRect();
+    return { sx: e.clientX - rect.left, sy: e.clientY - rect.top };
+  }
+
+  function cancelTouchTap(){
+    if (touchTap?.longTimer) clearTimeout(touchTap.longTimer);
+    touchTap = null;
+  }
+
+  function startOrUpdatePinch(){
+    const pts = [...activePointers.values()].filter(p => p.type === 'touch');
+    if (pts.length !== 2) { pinchState = null; return; }
+
+    const a = pts[0], b = pts[1];
+    const dx = a.x - b.x, dy = a.y - b.y;
+    const dist = Math.max(1e-6, Math.hypot(dx, dy));
+    const midX = (a.x + b.x) * 0.5;
+    const midY = (a.y + b.y) * 0.5;
+
+    if (!pinchState){
+      pinchState = { dist, zoom: camera.zoom, midX, midY };
+      return;
+    }
+
+    const scale = dist / pinchState.dist;
+    const rect = canvas.getBoundingClientRect();
+    const mx = midX - rect.left;
+    const my = midY - rect.top;
+
+    const before = screenToWorld(mx, my);
+    camera.zoom = clamp(pinchState.zoom * scale, CONFIG.zoomMin, CONFIG.zoomMax);
+    const after = screenToWorld(mx, my);
+
+    // keep midpoint anchored
+    const {dx, dy} = torusDelta(after.x, after.y, before.x, before.y);
+    camera.x = (camera.x + dx + world.w) % world.w;
+    camera.y = (camera.y + dy + world.h) % world.h;
+  }
+
+  canvas.addEventListener('pointerdown', (e) => {
+    canvas.setPointerCapture?.(e.pointerId);
+    const { sx, sy } = canvasPointFromEvent(e);
+    activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY, type: e.pointerType || 'mouse' });
+
+    // Touch: wait to decide tap vs long-press vs pinch
+    if ((e.pointerType || '') === 'touch') {
+      // if this is the 2nd touch, this becomes a pinch; cancel any pending tap
+      if ([...activePointers.values()].filter(p => p.type === 'touch').length >= 2) {
+        cancelTouchTap();
+        startOrUpdatePinch();
+        return;
+      }
+
+      cancelTouchTap();
+      touchTap = {
+        pointerId: e.pointerId,
+        sx, sy,
+        downAt: performance.now(),
+        moved: false,
+        canceled: false,
+        longTimer: null
+      };
+
+      touchTap.longTimer = setTimeout(() => {
+        if (!touchTap || touchTap.canceled || touchTap.moved) return;
+        // long-tap => boosted impulse (use last known point)
+        const w = screenToWorld(touchTap.sx, touchTap.sy);
+        applyImpulseToWorld(w.x, w.y, true);
+        touchTap.canceled = true; // consume (don't also fire tap on release)
+      }, LONG_TAP_MS);
+
+      return;
+    }
+
+    // Mouse / pen: immediate impulse (boost via space)
+    const w = screenToWorld(sx, sy);
+    applyImpulseToWorld(w.x, w.y, boost);
+  });
+
+  canvas.addEventListener('pointermove', (e) => {
+    if (!activePointers.has(e.pointerId)) return;
+    activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY, type: e.pointerType || 'mouse' });
+
+    // pinch zoom
+    if ((e.pointerType || '') === 'touch') {
+      startOrUpdatePinch();
+
+      // mark tap as moved (so it won't trigger)
+      if (touchTap && touchTap.pointerId === e.pointerId && !touchTap.canceled) {
+        const { sx, sy } = canvasPointFromEvent(e);
+        const dx = sx - touchTap.sx, dy = sy - touchTap.sy;
+        if (Math.hypot(dx, dy) > TAP_MOVE_PX) touchTap.moved = true;
+      }
+    }
+  });
+
+  canvas.addEventListener('pointerup', (e) => {
+    if (activePointers.has(e.pointerId)) activePointers.delete(e.pointerId);
+
+    if ((e.pointerType || '') === 'touch') {
+      // leaving pinch mode
+      if ([...activePointers.values()].filter(p => p.type === 'touch').length < 2) pinchState = null;
+
+      // tap => impulse (only if not consumed by long-tap and not moved)
+      if (touchTap && touchTap.pointerId === e.pointerId) {
+        const consumed = touchTap.canceled || touchTap.moved;
+        if (touchTap.longTimer) clearTimeout(touchTap.longTimer);
+        if (!consumed) {
+          const w = screenToWorld(touchTap.sx, touchTap.sy);
+          applyImpulseToWorld(w.x, w.y, false);
+        }
+        touchTap = null;
+      }
+    }
+  });
+
+  canvas.addEventListener('pointercancel', (e) => {
+    if (activePointers.has(e.pointerId)) activePointers.delete(e.pointerId);
+    pinchState = null;
+    if (touchTap && touchTap.pointerId === e.pointerId) cancelTouchTap();
+  });
+
+
+  // ---------- Counters
+  let absorbedCount = 0;
+  let survivedSec = 0;
+
+  // ---------- Reset
+  function reset() {
+    initWorldSizeOnce();
+    makeStars();
+
+    // --- 1) baseline player state (mass first so playerR() is stable)
+    player.vx = 0; player.vy = 0;
+    player.mass = 90;
+    player.trail.length = 0;
+    player.lastClickAt = 0;
+    player.lastClickDirX = 1;
+    player.lastClickDirY = 0;
+    player.comboBonus = 0;
+    player.clickPingAt = 0;
+
+    // --- 2) spawn black holes first
+    blackholes.length = 0;
+    for (let i=0;i<CONFIG.blackHoleCount;i++){
+      blackholes.push(spawnStaticBlackHole());
+    }
+
+    // --- 3) pick a safe spawn position (outside all BH pull ranges + margin)
+    function isSafeSpawn(x, y) {
+      const pr = playerR();
+      for (const bh of blackholes) {
+        const pullR = bh.r * CONFIG.bhPullRadiusMultiplier * CONFIG.bhRangeMultiplier;
+        const d = torusDist(x, y, bh.x, bh.y);
+        // margin: pullR + player radius + extra padding
+        if (d < pullR + pr + 180) return false;
+      }
+      return true;
+    }
+
+    function findSafeSpawn() {
+      // Try random points first
+      for (let tries=0; tries<260; tries++) {
+        const x = rand(0, world.w);
+        const y = rand(0, world.h);
+        if (isSafeSpawn(x, y)) return {x, y};
+      }
+      // Fallback: choose the "best" among samples (max distance to nearest pullR)
+      let best = { x: world.w*0.5, y: world.h*0.5 };
+      let bestScore = -1e9;
+      for (let tries=0; tries<220; tries++) {
+        const x = rand(0, world.w);
+        const y = rand(0, world.h);
+        let minClear = 1e9;
+        for (const bh of blackholes) {
+          const pullR = bh.r * CONFIG.bhPullRadiusMultiplier * CONFIG.bhRangeMultiplier;
+          const d = torusDist(x, y, bh.x, bh.y);
+          minClear = Math.min(minClear, d - pullR);
+        }
+        if (minClear > bestScore) {
+          bestScore = minClear;
+          best = {x, y};
+        }
+      }
+      return best;
+    }
+
+    const spawn = findSafeSpawn();
+    player.x = spawn.x;
+    player.y = spawn.y;
+
+    // camera
+    camera.x = player.x;
+    camera.y = player.y;
+    camera.zoom = 1.0;
+
+    // --- 4) spawn small planets away from player
+    smalls.length = 0;
+    for (let i=0;i<CONFIG.smallPlanetCount;i++){
+      smalls.push(spawnSmall(player.x, player.y, playerR()));
+    }
+
+    particles.length = 0;
+    absorbedCount = 0;
+    survivedSec = 0;
+  }
+
+  // ---------- Main loop
+  let lastT = performance.now();
+
+  function step(t) {
+    const dt = Math.min(0.033, (t - lastT) / 1000);
+    lastT = t;
+    survivedSec += dt;
+
+    // move player (constant inertia)
+    player.x += player.vx * 60 * dt;
+    player.y += player.vy * 60 * dt;
+    wrapPos(player);
+
+    // trail
+    {
+      const p = shiftIntoView(player.x, player.y);
+      player.trail.push({x: p.x, y: p.y});
+      if (player.trail.length > CONFIG.trailLength) player.trail.shift();
+    }
+
+    // move smalls
+    for (const s of smalls) {
+      s.x += s.vx * 60 * dt;
+      s.y += s.vy * 60 * dt;
+      wrapPos(s);
+      s.vx += rand(-0.02, 0.02) * dt;
+      s.vy += rand(-0.02, 0.02) * dt;
+      s.vx *= 0.996; s.vy *= 0.996;
+
+      const sp = shiftIntoView(s.x, s.y);
+      s.trail.push({x: sp.x, y: sp.y});
+      if (s.trail.length > CONFIG.trailLength) s.trail.shift();
+    }
+
+    // player gravity field affects smalls
+    {
+      const pr = playerR();
+      const gRange = pr * CONFIG.playerGravityRangeMult;
+      for (const s of smalls) {
+        const {dx, dy} = torusDelta(s.x, s.y, player.x, player.y);
+        const d = Math.max(0.001, hypot(dx, dy));
+        if (d < gRange) {
+          const nx = dx / d, ny = dy / d;
+          const x = clamp(1 - (d / gRange), 0, 1);
+          const fall = Math.pow(x, CONFIG.playerGravityFalloffPower);
+
+          let accel = (CONFIG.playerGravityStrength * fall) * dt * 0.06;
+          accel = Math.min(accel, CONFIG.playerGravityMaxAccel * dt);
+
+          s.vx += nx * accel;
+          s.vy += ny * accel;
+        }
+      }
+    }
+
+    // black holes: capture vs swing-by (keep speed)
+    let bhProximity = 'none';
+
+    for (const bh of blackholes) {
+      const pullR = bh.r * CONFIG.bhPullRadiusMultiplier * CONFIG.bhRangeMultiplier; // ✅ 1.5배 적용
+      const killR = bh.r * CONFIG.bhKillRadiusMultiplier;
+
+      const {dx, dy} = torusDelta(player.x, player.y, bh.x, bh.y);
+      const d = Math.max(0.001, hypot(dx, dy));
+      if (d >= pullR) continue;
+
+      const nx = dx / d, ny = dy / d;
+      const x = clamp(1 - (d / pullR), 0, 1);
+      const fall = Math.pow(x, CONFIG.bhFalloffPower);
+
+      const v = hypot(player.vx, player.vy);
+      const fast = v >= CONFIG.bhCaptureSpeed;
+
+      // drain
+      const near = clamp((pullR - d) / Math.max(1, pullR - killR), 0, 1);
+      player.mass -= CONFIG.bhDrainPerSec * (1 + near * CONFIG.bhDrainNearMultiplier) * dt;
+
+      if (d < killR * 2.2) bhProximity = 'danger';
+      else if (bhProximity !== 'danger') bhProximity = 'warn';
+
+      if (!fast && d < pullR * CONFIG.bhCaptureRadiusFactor) {
+        // CAPTURE MODE: accelerate toward BH
+        let accel = (bh.strength * fall) * dt * 0.00060 * CONFIG.bhCapturePull;
+        accel = Math.min(accel, CONFIG.bhCaptureMaxAccel * dt);
+
+        player.vx += nx * accel;
+        player.vy += ny * accel;
+
+        // slight swirl (spiral)
+        const tx = -ny, ty = nx;
+        const swirl = CONFIG.bhCaptureSwirl * fall * (bh.strength / (pullR*pullR + 1)) * 320 * dt;
+        player.vx += tx * swirl;
+        player.vy += ty * swirl;
+
+      } else {
+        // SWING-BY MODE: keep speed constant, only rotate direction
+        const v0 = Math.max(0.001, v);
+        const vx0 = player.vx / v0;
+        const vy0 = player.vy / v0;
+
+        let turn = CONFIG.bhSwingTurnRate * fall * dt;
+        turn = Math.min(turn, CONFIG.bhSwingMaxTurnPerSec * dt);
+
+        const cross = (vx0 * ny - vy0 * nx);
+        const sign = (cross >= 0) ? 1 : -1;
+
+        const c = Math.cos(turn);
+        const s = Math.sin(turn) * sign;
+        const rx = vx0 * c - vy0 * s;
+        const ry = vx0 * s + vy0 * c;
+
+        const bx = rx + nx * CONFIG.bhSwingPullAssist * fall;
+        const by = ry + ny * CONFIG.bhSwingPullAssist * fall;
+        const bn = Math.max(0.001, hypot(bx, by));
+
+        player.vx = (bx / bn) * v0;
+        player.vy = (by / bn) * v0;
+      }
+
+      if (d < killR + playerR()*0.25) {
+        player.mass -= (CONFIG.bhDrainPerSec * 3.8) * dt;
+      }
+
+      // ✅ BH particles 10배+ (기존: 0.10*fall 확률로 1개)
+      // 이제: fall 확률로 1개 + 가까울수록 추가 1개 더
+      const chance = Math.min(1, CONFIG.bhParticleChanceBase * fall);
+      if (Math.random() < chance) {
+        const r = playerR();
+        const ang = rand(0, Math.PI*2);
+        const px = (player.x + Math.cos(ang) * r) % world.w;
+        const py = (player.y + Math.sin(ang) * r) % world.h;
+        spawnParticle(px, py, bh.x, bh.y, rand(2.2, 4.2), rand(0.35, 0.75), 32, 0.55);
+
+        // extra close burst
+        if (fall > 0.65 && Math.random() < Math.min(1, CONFIG.bhParticleExtraClose * fall)) {
+          const ang2 = rand(0, Math.PI*2);
+          const px2 = (player.x + Math.cos(ang2) * r) % world.w;
+          const py2 = (player.y + Math.sin(ang2) * r) % world.h;
+          spawnParticle(px2, py2, bh.x, bh.y, rand(2.2, 4.2), rand(0.35, 0.75), 32, 0.55);
+        }
+      }
+    }
+
+    // clamp speed for controllability
+    {
+      const cap = maxSpeedNow();
+      const sp = hypot(player.vx, player.vy);
+      if (sp > cap) {
+        player.vx = (player.vx / sp) * cap;
+        player.vy = (player.vy / sp) * cap;
+      }
+    }
+
+    // absorb on contact
+    {
+      const pr = playerR();
+      for (let i = smalls.length - 1; i >= 0; i--) {
+        const s = smalls[i];
+        const sr = radiusFromMass(s.mass);
+        const d = torusDist(player.x, player.y, s.x, s.y);
+        if (d <= pr + sr) {
+          const gain = s.mass * CONFIG.absorbGainMultiplier;
+          const oldMass = player.mass;
+          player.mass += gain;
+
+          player.vx = (player.vx * oldMass + s.vx * gain) / player.mass;
+          player.vy = (player.vy * oldMass + s.vy * gain) / player.mass;
+
+          const cap = maxSpeedNow();
+          const sp = hypot(player.vx, player.vy);
+          if (sp > cap) {
+            player.vx = (player.vx / sp) * cap;
+            player.vy = (player.vy / sp) * cap;
+          }
+
+          smalls.splice(i,1);
+          absorbedCount++;
+        }
+      }
+    }
+
+    // particles update
+    for (let i = particles.length - 1; i >= 0; i--) {
+      const pt = particles[i];
+      pt.life -= dt;
+      if (pt.life <= 0) { particles.splice(i,1); continue; }
+      pt.x += pt.vx * 60 * dt;
+      pt.y += pt.vy * 60 * dt;
+      wrapPos(pt);
+      pt.vx *= Math.pow(0.995, 60*dt);
+      pt.vy *= Math.pow(0.995, 60*dt);
+    }
+
+    if (player.mass <= CONFIG.playerMinMass) reset();
+
+    // camera follow
+    {
+      const {dx, dy} = torusDelta(camera.x, camera.y, player.x, player.y);
+      camera.x = ((camera.x + dx * CONFIG.camFollow) % world.w + world.w) % world.w;
+      camera.y = ((camera.y + dy * CONFIG.camFollow) % world.h + world.h) % world.h;
+    }
+
+    // render
+    ctx.fillStyle = '#000';
+    ctx.fillRect(0,0,window.innerWidth, window.innerHeight);
+
+    const cx = window.innerWidth * 0.5;
+    const cy = window.innerHeight * 0.5;
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.scale(camera.zoom, camera.zoom);
+    ctx.translate(-camera.x, -camera.y);
+
+    drawStars();
+    for (const s of smalls) drawSmall(s);
+    for (const bh of blackholes) drawBlackHole(bh);
+    drawParticles();
+    drawPlayer();
+
+    ctx.restore();
+
+    // HUD
+    const sp = hypot(player.vx, player.vy);
+    const cls = (bhProximity === 'danger') ? 'danger' : (bhProximity === 'warn' ? 'warn' : '');
+    statsEl.innerHTML =
+      `질량: <b class="${cls}">${player.mass.toFixed(1)}</b>` +
+      ` | 반지름: ${playerR().toFixed(1)}` +
+      ` | 중력권: ${(playerR()*CONFIG.playerGravityRangeMult).toFixed(0)}` +
+      ` | 속도: ${sp.toFixed(2)}/${maxSpeedNow().toFixed(1)}` +
+      ` | BH범위x: ${CONFIG.bhRangeMultiplier.toFixed(1)}` +
+      ` | 흡수: ${absorbedCount}` +
+      ` | 작은행성: ${smalls.length}` +
+      ` | 블랙홀: ${blackholes.length}` +
+      ` | 파티클: ${particles.length}` +
+      ` | 생존: ${Math.floor(survivedSec)}s` +
+      ` | 줌: ${camera.zoom.toFixed(2)}x`;
+
+    requestAnimationFrame(step);
+  }
+
+  // ---------- Start
+  function init() {
+    makeStars();
+    reset();
+  }
+
+  init();
+  requestAnimationFrame(step);
+})();
+</script>
+</body>
+</html>
