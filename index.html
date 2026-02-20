@@ -283,7 +283,8 @@
     return clamp(s, 0.75, 3.2);
   }
   function maxSpeedNow() {
-    return Math.min(CONFIG.maxSpeedCap, CONFIG.baseMaxSpeed * sizeSpeedScale());
+    const b = boostActive() ? CONFIG.boostMultiplier : 1.0;
+    return Math.min(CONFIG.maxSpeedCap * b, CONFIG.baseMaxSpeed * sizeSpeedScale() * b);
   }
 
   const smalls = [];
@@ -470,13 +471,16 @@
   }
 
   // ---------- Input
-  let boost = false;
+  let boostBySpace = false;
+  let boostByTouch = false;
+  function boostActive(){ return boostBySpace || boostByTouch; }
+
   window.addEventListener('keydown', (e) => {
-    if (e.code === 'Space') boost = true;
+    if (e.code === 'Space') boostBySpace = true;
     if (e.code === 'KeyR') reset();
   });
   window.addEventListener('keyup', (e) => {
-    if (e.code === 'Space') boost = false;
+    if (e.code === 'Space') boostBySpace = false;
   });
 
   function normalize(dx, dy) {
@@ -556,6 +560,9 @@
   let touchTap = null;              // {pointerId, sx, sy, downAt, moved, canceled, longTimer}
 
   const LONG_TAP_MS = 420;
+  // Continuous boost for touch long-press
+  const touchBoost = { active:false, wx:0, wy:0, pointerId:null };
+
   const TAP_MOVE_PX = 14;
 
   function canvasPointFromEvent(e){
@@ -627,7 +634,16 @@
         if (!touchTap || touchTap.canceled || touchTap.moved) return;
         // long-tap => boosted impulse (use last known point)
         const w = screenToWorld(touchTap.sx, touchTap.sy);
+        // Activate boost while finger is held (mobile)
+        boostByTouch = true;
+        touchBoost.active = true;
+        touchBoost.wx = w.x;
+        touchBoost.wy = w.y;
+        touchBoost.pointerId = e.pointerId;
+
+        // Immediate boosted impulse on activation
         applyImpulseToWorld(w.x, w.y, true);
+
         touchTap.canceled = true; // consume (don't also fire tap on release)
       }, LONG_TAP_MS);
 
@@ -636,7 +652,7 @@
 
     // Mouse / pen: immediate impulse (boost via space)
     const w = screenToWorld(sx, sy);
-    applyImpulseToWorld(w.x, w.y, boost);
+    applyImpulseToWorld(w.x, w.y, boostActive());
   });
 
   canvas.addEventListener('pointermove', (e) => {
@@ -647,6 +663,14 @@
     // pinch zoom
     if ((e.pointerType || '') === 'touch') {
       startOrUpdatePinch();
+
+      // If boosting, update target as finger moves (single-touch)
+      if (touchBoost.active && touchBoost.pointerId === e.pointerId && activePointers.size === 1) {
+        const { sx, sy } = canvasPointFromEvent(e);
+        const w = screenToWorld(sx, sy);
+        touchBoost.wx = w.x;
+        touchBoost.wy = w.y;
+      }
 
       // mark tap as moved (so it won't trigger)
       if (touchTap && touchTap.pointerId === e.pointerId && !touchTap.canceled) {
@@ -675,6 +699,13 @@
         }
         touchTap = null;
       }
+
+      // stop touch boost when finger lifts
+      if (touchBoost.active && touchBoost.pointerId === e.pointerId) {
+        touchBoost.active = false;
+        touchBoost.pointerId = null;
+        boostByTouch = false;
+      }
     }
   });
 
@@ -682,6 +713,11 @@
     if (activePointers.has(e.pointerId)) activePointers.delete(e.pointerId);
     pinchState = null;
     if (touchTap && touchTap.pointerId === e.pointerId) cancelTouchTap();
+    if (touchBoost.active && touchBoost.pointerId === e.pointerId) {
+      touchBoost.active = false;
+      touchBoost.pointerId = null;
+      boostByTouch = false;
+    }
   });
 
 
@@ -776,6 +812,16 @@
     const dt = Math.min(0.033, (t - lastT) / 1000);
     lastT = t;
     survivedSec += dt;
+
+    // touch long-press boost: continuous thrust toward finger
+    if (touchBoost.active && boostByTouch) {
+      const { dx: cdx, dy: cdy } = torusDelta(player.x, player.y, touchBoost.wx, touchBoost.wy);
+      const dir = normalize(cdx, cdy);
+      const accel = CONFIG.impulseStrength * CONFIG.boostMultiplier * 0.05 * (dt * 60);
+      player.vx += dir.x * accel;
+      player.vy += dir.y * accel;
+      addJetParticles(player.x, player.y, -dir.x, -dir.y, accel*0.25);
+    }
 
     // move player (constant inertia)
     player.x += player.vx * 60 * dt;
